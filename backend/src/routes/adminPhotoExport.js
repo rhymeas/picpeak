@@ -9,6 +9,7 @@ const { body, query, validationResult } = require('express-validator');
 const { db, withRetry } = require('../database/db');
 const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
+const { requireEventOwnership } = require('../middleware/ownership');
 const { PhotoFilterBuilder } = require('../utils/photoFilterBuilder');
 const { PhotoExportService } = require('../services/photoExportService');
 
@@ -18,7 +19,7 @@ const exportService = new PhotoExportService();
  * GET /admin/photos/:eventId/filtered
  * Get filtered photos with pagination
  */
-router.get('/:eventId/filtered', adminAuth, requirePermission('photos.view'), [
+router.get('/:eventId/filtered', adminAuth, requirePermission('photos.view'), requireEventOwnership, [
   query('min_rating').optional().isFloat({ min: 0, max: 5 }),
   query('max_rating').optional().isFloat({ min: 0, max: 5 }),
   query('has_likes').optional().isBoolean(),
@@ -132,7 +133,7 @@ router.get('/:eventId/filtered', adminAuth, requirePermission('photos.view'), [
  * GET /admin/photos/:eventId/filter-summary
  * Get just the summary counts for filter UI
  */
-router.get('/:eventId/filter-summary', adminAuth, requirePermission('photos.view'), async (req, res) => {
+router.get('/:eventId/filter-summary', adminAuth, requirePermission('photos.view'), requireEventOwnership, async (req, res) => {
   try {
     const eventId = parseInt(req.params.eventId);
 
@@ -154,7 +155,7 @@ router.get('/:eventId/filter-summary', adminAuth, requirePermission('photos.view
  * POST /admin/photos/:eventId/export
  * Export selected or filtered photos
  */
-router.post('/:eventId/export', adminAuth, requirePermission('photos.download'), [
+router.post('/:eventId/export', adminAuth, requirePermission('photos.download'), requireEventOwnership, [
   body('photo_ids').optional().isArray(),
   body('photo_ids.*').optional().isInt(),
   body('filter').optional().isObject(),
