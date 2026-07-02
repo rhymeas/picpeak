@@ -36,8 +36,11 @@ jobs:
       # requests" + the repo's "Allow auto-merge"). Only meaningful when a PAT is
       # set: without it the PR is bot-authored and can't be self-approved, so we
       # skip and leave today's manual flow. Best-effort — never blocks the run.
+      # Always runs (not gated on release_created): a single release-please run
+      # can BOTH cut a release and open the next PR — e.g. a catch-up run, or when
+      # commits accumulated. Gating on release_created != 'true' skipped the new
+      # PR in exactly those cases (#725). The step no-ops when there is no open PR.
       - name: Auto-approve and enable auto-merge on the release PR
-        if: ${{ steps.release.outputs.release_created != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN }}

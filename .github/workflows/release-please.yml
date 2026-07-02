@@ -29,8 +29,10 @@ jobs:
       # Auto-approve + auto-merge the open stable release PR. See the beta
       # workflow for the full rationale. Skipped on the release-cutting run and
       # whenever no PAT is configured.
+      # Always runs (not gated on release_created) — a single run can both cut a
+      # release and open the next PR; gating skipped the new PR (#725). No-ops
+      # when there is no open release PR.
       - name: Auto-approve and enable auto-merge on the release PR
-        if: ${{ steps.release.outputs.release_created != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN }}
