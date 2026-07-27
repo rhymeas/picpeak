@@ -209,12 +209,23 @@ async function processUploadedVideo(videoPath, thumbnailKey, options = {}) {
       maxLongEdge,
       ...thumbnailOptions
     } = options;
-    await generateVideoThumbnail(videoPath, thumbnailKey, thumbnailOptions);
-
     const storage = getStorage();
-    const exists = await storage.exists(thumbnailKey);
-    if (!exists) {
-      throw new Error('Thumbnail generation failed (not in storage)');
+    let generatedThumbnailKey = null;
+    try {
+      await generateVideoThumbnail(videoPath, thumbnailKey, thumbnailOptions);
+      const exists = await storage.exists(thumbnailKey);
+      if (!exists) {
+        throw new Error('Thumbnail generation failed (not in storage)');
+      }
+      generatedThumbnailKey = thumbnailKey;
+    } catch (error) {
+      // A short or unusual video can miss the requested thumbnail frame. Keep
+      // transcoding independent so the browser-ready stream still gets made.
+      logger.warn('Video thumbnail generation failed', {
+        videoPath,
+        thumbnailKey,
+        error: error.message,
+      });
     }
 
     let generatedStreamKey = null;
@@ -235,7 +246,7 @@ async function processUploadedVideo(videoPath, thumbnailKey, options = {}) {
     return {
       success: true,
       metadata,
-      thumbnailKey,
+      thumbnailKey: generatedThumbnailKey,
       streamKey: generatedStreamKey,
     };
   } catch (error) {

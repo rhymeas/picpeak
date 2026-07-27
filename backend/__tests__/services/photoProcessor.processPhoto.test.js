@@ -71,8 +71,11 @@ jest.mock('../../src/services/imageProcessor', () => {
   const mockExtractCaptureDate = jest.fn();
   return {
     generateThumbnail: mockGenerateThumbnail,
+    generatePreviewImage: jest.fn(),
     generateVideoPlaceholder: jest.fn(async (filename) => `thumbnails/thumb_${filename.replace(/\.[^.]+$/, '')}.jpg`),
     extractCaptureDate: mockExtractCaptureDate,
+    isHeicFilename: jest.fn(() => false),
+    isRawFilename: jest.fn(() => false),
     withLocalCopy: jest.fn(async (key, fn) =>
       fn(`/tmp/local-copy-${require('path').basename(key)}`)
     ),
@@ -250,6 +253,41 @@ describe('photoProcessor.processPhoto', () => {
     expect(imageProcessor.generateVideoPlaceholder).toHaveBeenCalledWith('drone-clip.mp4');
     expect(finalUpdate.data.duration).toBe(42);
     expect(finalUpdate.data.video_codec).toBe('hevc');
+  });
+
+  it('keeps a browser stream when only video thumbnail generation fails', async () => {
+    dbModule.__setPhoto({
+      id: 204,
+      event_id: 9,
+      filename: 'short-iphone-clip.mov',
+      original_filename: 'IMG_0001.MOV',
+      mime_type: 'video/quicktime',
+      media_type: 'video',
+      size_bytes: 54321,
+      captured_at: null,
+    });
+    dbModule.__setEvent({ id: 9, slug: 'wedding', event_name: 'Wedding' });
+
+    videoProcessor.processUploadedVideo.mockResolvedValueOnce({
+      thumbnailKey: null,
+      streamKey: 'streams/wedding/short-iphone-clip.mp4',
+      metadata: {
+        duration: 1,
+        videoCodec: 'hevc',
+        audioCodec: 'aac',
+        width: 1920,
+        height: 1080,
+      },
+    });
+
+    const { processPhoto } = require('../../src/services/photoProcessor');
+    await processPhoto(204);
+
+    const finalUpdate = dbModule.__recorded().updateCalls.pop();
+    expect(finalUpdate.data.processing_status).toBe('complete');
+    expect(finalUpdate.data.stream_path).toBe('streams/wedding/short-iphone-clip.mp4');
+    expect(finalUpdate.data.thumbnail_path).toBe('thumbnails/thumb_short-iphone-clip.jpg');
+    expect(imageProcessor.generateVideoPlaceholder).toHaveBeenCalledWith('short-iphone-clip.mov');
   });
 
   it('throws when the photo row no longer exists', async () => {
