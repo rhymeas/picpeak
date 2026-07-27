@@ -1,7 +1,16 @@
 const path = require('path');
 const fs = require('fs').promises;
 const { db } = require('../database/db');
-const { generateThumbnail, generateVideoPlaceholder, extractCaptureDate, withLocalCopy, withProcessableImage } = require('./imageProcessor');
+const {
+  generateThumbnail,
+  generateVideoPlaceholder,
+  generatePreviewImage,
+  extractCaptureDate,
+  withLocalCopy,
+  withProcessableImage,
+  isHeicFilename,
+  isRawFilename,
+} = require('./imageProcessor');
 const { generatePhotoFilename } = require('../utils/filenameSanitizer');
 const { processUploadedVideo, extractVideoMetadata, isVideoMimeType } = require('./videoProcessor');
 const { getStorage } = require('./storage');
@@ -133,6 +142,8 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
       // Generate thumbnail and extract metadata FROM the temp file (still on
       // local disk) before uploading the original.
       let thumbnailPath;
+      let previewPath;
+      let streamPath;
       let videoMetadata = null;
       let imageMetadata = null;
 
@@ -140,6 +151,11 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
         const videoThumbnailKey = path.posix.join(
           'thumbnails',
           `thumb_${newFilename.replace(/\.[^.]+$/, '.jpg')}`
+        );
+        const videoStreamKey = path.posix.join(
+          'streams',
+          event.slug,
+          `${path.parse(newFilename).name}.mp4`
         );
         // A thumbnail/probe failure must not lose the video: without this
         // guard the whole upload errors here, while the image branch below
@@ -149,9 +165,13 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
         // as an <img> blob (thumbnail_url || url), i.e. a multi-GB download
         // for a broken tile (codex review of #845).
         try {
-          const result = await processUploadedVideo(tempPath, videoThumbnailKey);
+          const result = await processUploadedVideo(tempPath, videoThumbnailKey, {
+            streamKey: videoStreamKey,
+            sourceMimeType: file.mimetype,
+          });
           videoMetadata = result.metadata;
           thumbnailPath = result.thumbnailKey;
+          streamPath = result.streamKey;
         } catch (videoErr) {
           logger.warn(`Video processing failed for ${file.originalname}, using placeholder thumbnail:`, videoErr.message);
           try {
@@ -171,6 +191,13 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
         const proc = await withProcessableImage(tempPath, newFilename);
         try {
           thumbnailPath = await generateThumbnail(proc.path, { outputBasename: proc.outputBasename });
+          const shouldGeneratePreview =
+            process.env.TRAVELBLOGR_EAGER_DERIVATIVES === 'true' ||
+            isHeicFilename(file.originalname) ||
+            isRawFilename(file.originalname);
+          if (shouldGeneratePreview) {
+            previewPath = await generatePreviewImage(proc.path, { outputBasename: proc.outputBasename });
+          }
           try {
             const sharp = require('sharp');
             const metadata = await sharp(proc.path).metadata();
@@ -193,6 +220,7 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
       try {
         await getStorage().putFromFile(finalKey, tempPath, {
           contentType: file.mimetype,
+          cacheControl: 'private, max-age=31536000, immutable',
         });
       } catch (uploadErr) {
         logger.error(`Failed to upload ${file.originalname} → ${finalKey}:`, uploadErr);
@@ -223,6 +251,8 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
         original_filename: file.originalname,
         path: relativePath,
         thumbnail_path: relativeThumbPath,
+        preview_path: previewPath || null,
+        stream_path: streamPath || null,
         type: photoType,
         size_bytes: file.size,
         uploaded_by: uploadedBy,
@@ -388,7 +418,10 @@ async function queueFilesForProcessing(files, options = {}) {
 
       // Move to storage first so the file is at its recorded path by the
       // time the worker picks up the row.
-      await storage.putFromFile(finalKey, tempPath, { contentType: file.mimetype });
+      await storage.putFromFile(finalKey, tempPath, {
+        contentType: file.mimetype,
+        cacheControl: 'private, max-age=31536000, immutable',
+      });
       await fs.unlink(tempPath).catch(() => {});
 
       const stat = await storage.stat(finalKey);
@@ -475,6 +508,11 @@ async function processPhoto(photoId) {
         'thumbnails',
         `thumb_${photo.filename.replace(/\.[^.]+$/, '.jpg')}`
       );
+      const videoStreamKey = path.posix.join(
+        'streams',
+        event.slug,
+        `${path.parse(photo.filename).name}.mp4`
+      );
       // A thumbnail/probe failure must not fail the row: processPhoto's caller
       // marks failed rows 'failed' and the guest gallery only lists 'complete',
       // so the video would become permanently invisible. The image branch below
@@ -485,7 +523,10 @@ async function processPhoto(photoId) {
       // download for a broken tile (codex review of #845).
       let videoResult = null;
       try {
-        videoResult = await processUploadedVideo(localPath, videoThumbnailKey);
+        videoResult = await processUploadedVideo(localPath, videoThumbnailKey, {
+          streamKey: videoStreamKey,
+          sourceMimeType: photo.mime_type,
+        });
       } catch (videoErr) {
         logger.warn(`processPhoto: video processing failed for ${photoId}, using placeholder thumbnail`, { error: videoErr.message });
         try {
@@ -498,6 +539,7 @@ async function processPhoto(photoId) {
         if (placeholderKey) videoResult = { ...(videoResult || {}), thumbnailKey: placeholderKey };
       }
       if (videoResult?.thumbnailKey) updateData.thumbnail_path = videoResult.thumbnailKey;
+      if (videoResult?.streamKey) updateData.stream_path = videoResult.streamKey;
       if (videoResult?.metadata) {
         const m = videoResult.metadata;
         if (m.duration != null) updateData.duration = m.duration;
@@ -529,6 +571,19 @@ async function processPhoto(photoId) {
           }
         } catch (e) {
           logger.warn(`processPhoto: dimensions extraction failed for ${photoId}`, { error: e.message });
+        }
+        const sourceName = photo.original_filename || photo.filename;
+        const shouldGeneratePreview =
+          process.env.TRAVELBLOGR_EAGER_DERIVATIVES === 'true' ||
+          isHeicFilename(sourceName) ||
+          isRawFilename(sourceName);
+        if (shouldGeneratePreview) {
+          try {
+            const previewPath = await generatePreviewImage(proc.path, { outputBasename: proc.outputBasename });
+            if (previewPath) updateData.preview_path = previewPath;
+          } catch (e) {
+            logger.warn(`processPhoto: preview generation failed for ${photoId}`, { error: e.message });
+          }
         }
       } finally {
         await proc.cleanup();

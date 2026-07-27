@@ -98,6 +98,12 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
     if (existingPhoto.thumbnail_path && existingPhoto.thumbnail_path !== thumbnailPath) {
       await storage.delete(existingPhoto.thumbnail_path).catch(() => {});
     }
+    if (existingPhoto.preview_path) {
+      await storage.delete(existingPhoto.preview_path).catch(() => {});
+    }
+    if (existingPhoto.stream_path) {
+      await storage.delete(existingPhoto.stream_path).catch(() => {});
+    }
     try {
       await watermarkGeneratorService.deleteForPhoto(existingPhoto.id);
     } catch {
@@ -114,6 +120,8 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
       original_filename: originalFilename,
       path: relativePath,
       thumbnail_path: thumbnailPath,
+      preview_path: null,
+      stream_path: null,
       size_bytes: stats.size,
       width,
       height,

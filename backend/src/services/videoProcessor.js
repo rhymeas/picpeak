@@ -6,6 +6,7 @@ const os = require('os');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 const { getStorage } = require('./storage');
+const IMMUTABLE_PRIVATE_CACHE = 'private, max-age=31536000, immutable';
 
 // Use system ffmpeg/ffprobe (apk-installed in the Docker image, brew/apt on
 // dev hosts). The npm `@ffmpeg-installer/ffmpeg` binary is glibc-built and
@@ -88,9 +89,68 @@ async function generateVideoThumbnail(videoPath, thumbnailKey, options = {}) {
       throw new Error('ffmpeg did not produce a thumbnail file');
     }
 
-    await storage.putFromFile(thumbnailKey, tmpPath, { contentType: 'image/jpeg' });
+    await storage.putFromFile(thumbnailKey, tmpPath, {
+      contentType: 'image/jpeg',
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
     logger.info('Video thumbnail generated', { videoPath, thumbnailKey });
     return thumbnailKey;
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function isBrowserReadyMp4(metadata, options = {}) {
+  const sourceMimeType = (options.sourceMimeType || '').toLowerCase();
+  const videoCodec = (metadata?.videoCodec || '').toLowerCase();
+  const audioCodec = (metadata?.audioCodec || '').toLowerCase();
+  return sourceMimeType === 'video/mp4' &&
+    ['h264', 'avc1'].includes(videoCodec) &&
+    (!audioCodec || ['aac', 'mp3'].includes(audioCodec));
+}
+
+async function generateBrowserVideoDerivative(videoPath, streamKey, options = {}) {
+  if (!streamKey) throw new Error('A stream storage key is required');
+
+  const storage = getStorage();
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'picpeak-stream-'));
+  const tmpPath = path.join(tmpDir, `${crypto.randomBytes(6).toString('hex')}.mp4`);
+  const maxLongEdge = Math.min(Math.max(Number(options.maxLongEdge) || 1920, 640), 3840);
+
+  try {
+    await new Promise((resolve, reject) => {
+      const command = ffmpeg(videoPath)
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .audioBitrate('160k')
+        .videoFilters(`scale=w='min(iw,${maxLongEdge})':h='min(ih,${maxLongEdge})':force_original_aspect_ratio=decrease:force_divisible_by=2`)
+        .format('mp4')
+        .outputOptions([
+          '-map 0:v:0',
+          '-map 0:a:0?',
+          '-preset veryfast',
+          '-crf 23',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart',
+          '-sn',
+          '-dn',
+        ]);
+
+      command
+        .save(tmpPath)
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    const stat = await fs.stat(tmpPath);
+    if (!stat.size) throw new Error('ffmpeg produced an empty MP4 derivative');
+
+    await storage.putFromFile(streamKey, tmpPath, {
+      contentType: 'video/mp4',
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
+    logger.info('Browser video derivative generated', { videoPath, streamKey, size: stat.size });
+    return streamKey;
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -132,7 +192,7 @@ async function getVideoDuration(videoPath) {
  *
  * @param {string} videoPath - Local path to the source video (ffmpeg requires fs).
  * @param {string} thumbnailKey - Relative storage key for the thumbnail.
- * @returns {Promise<{success: boolean, metadata: Object, thumbnailKey: string}>}
+ * @returns {Promise<{success: boolean, metadata: Object, thumbnailKey: string, streamKey: string|null}>}
  */
 async function processUploadedVideo(videoPath, thumbnailKey, options = {}) {
   try {
@@ -142,7 +202,14 @@ async function processUploadedVideo(videoPath, thumbnailKey, options = {}) {
     }
 
     const metadata = await extractVideoMetadata(videoPath);
-    await generateVideoThumbnail(videoPath, thumbnailKey, options);
+    const {
+      streamKey,
+      sourceMimeType,
+      forceTranscode = false,
+      maxLongEdge,
+      ...thumbnailOptions
+    } = options;
+    await generateVideoThumbnail(videoPath, thumbnailKey, thumbnailOptions);
 
     const storage = getStorage();
     const exists = await storage.exists(thumbnailKey);
@@ -150,10 +217,26 @@ async function processUploadedVideo(videoPath, thumbnailKey, options = {}) {
       throw new Error('Thumbnail generation failed (not in storage)');
     }
 
+    let generatedStreamKey = null;
+    if (streamKey && (forceTranscode || !isBrowserReadyMp4(metadata, { sourceMimeType }))) {
+      try {
+        generatedStreamKey = await generateBrowserVideoDerivative(videoPath, streamKey, { maxLongEdge });
+      } catch (error) {
+        // Keep the original and thumbnail usable even when one unusual codec
+        // cannot be transcoded. The processor can be retried after ffmpeg is fixed.
+        logger.warn('Browser video derivative generation failed', {
+          videoPath,
+          streamKey,
+          error: error.message,
+        });
+      }
+    }
+
     return {
       success: true,
       metadata,
-      thumbnailKey
+      thumbnailKey,
+      streamKey: generatedStreamKey,
     };
   } catch (error) {
     logger.error('Error processing video', { error: error.message, videoPath });
@@ -192,6 +275,8 @@ module.exports = {
   isValidVideo,
   getVideoDuration,
   processUploadedVideo,
+  generateBrowserVideoDerivative,
+  isBrowserReadyMp4,
   getThumbnailAtTime,
   isVideoMimeType
 };
