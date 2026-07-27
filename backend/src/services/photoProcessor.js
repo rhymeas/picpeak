@@ -179,9 +179,10 @@ async function processUploadedPhotos(files, eventId, uploadedBy = 'admin', categ
           } catch (metaErr) {
             logger.warn(`Video metadata extraction also failed for ${file.originalname}:`, metaErr.message);
           }
-          // ffmpeg-free (sharp-rendered SVG); returns null on failure.
-          thumbnailPath = await generateVideoPlaceholder(newFilename);
         }
+        // ffmpeg-free (sharp-rendered SVG); returns null on failure. Thumbnail
+        // failure is independent from a successful browser stream derivative.
+        if (!thumbnailPath) thumbnailPath = await generateVideoPlaceholder(newFilename);
       } else {
         // RAW/DNG can't be fed to sharp directly (no raw loader), so extract the
         // embedded JPEG preview first and thumbnail/measure THAT. Pass-through
@@ -534,7 +535,10 @@ async function processPhoto(photoId) {
         } catch (metaErr) {
           logger.warn(`processPhoto: video metadata extraction also failed for ${photoId}`, { error: metaErr.message });
         }
-        // ffmpeg-free (sharp-rendered SVG); returns null on failure.
+      }
+      // processUploadedVideo can return a valid MP4 stream even when ffmpeg
+      // could not capture the requested thumbnail frame (common on tiny clips).
+      if (!videoResult?.thumbnailKey) {
         const placeholderKey = await generateVideoPlaceholder(photo.filename);
         if (placeholderKey) videoResult = { ...(videoResult || {}), thumbnailKey: placeholderKey };
       }
