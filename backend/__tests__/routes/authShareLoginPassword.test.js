@@ -108,6 +108,7 @@ describe('POST /auth/gallery/share-login password enforcement', () => {
 
     expect(res.status).toBe(200);
     expect(typeof res.body.token).toBe('string');
+    expect(require('jsonwebtoken').decode(res.body.token).via).toBe('share');
     expect(res.body.event).toBeDefined();
     expect(mockSetGalleryAuthCookies).toHaveBeenCalledTimes(1);
   });

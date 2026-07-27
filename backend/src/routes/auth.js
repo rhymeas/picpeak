@@ -629,6 +629,7 @@ router.post('/gallery/share-login', [
       eventId: event.id,
       eventSlug: event.slug,
       type: 'gallery',
+      via: 'share',
       ip: ipAddress,
       loginTime: Date.now()
     }, process.env.JWT_SECRET, {

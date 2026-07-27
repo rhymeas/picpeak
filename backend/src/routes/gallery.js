@@ -24,7 +24,7 @@ const { resolveGuest } = require('../middleware/guestAuth');
 const { generateGuestIdentifier } = require('../middleware/feedbackRateLimit');
 const secureImageService = require('../services/secureImageService');
 const logger = require('../utils/logger');
-const { resolvePhotoFilePath } = require('../services/photoResolver');
+const { resolvePhotoFilePath, resolvePhotoStorageKey } = require('../services/photoResolver');
 const { getEventCategoriesOrdered } = require('../utils/categoryOrder');
 const { getEventShareToken, resolveShareIdentifier, buildShareLinkVariants } = require('../services/shareLinkService');
 const { handleAsync, errorResponse } = require('../utils/routeHelpers');
@@ -57,6 +57,51 @@ function originalNeedsPreview(photo) {
   const name = photo.original_filename || photo.filename || '';
   const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
   return NON_DISPLAYABLE_ORIGINAL_EXT.has(ext);
+}
+
+function directUrlTtlSeconds() {
+  const configured = Number.parseInt(process.env.TRAVELBLOGR_DIRECT_URL_TTL_SECONDS || '900', 10);
+  if (!Number.isFinite(configured)) return 900;
+  return Math.min(Math.max(configured, 60), 3600);
+}
+
+async function buildDirectStorageUrls(event, photo) {
+  const storage = getStorage();
+  if (storage.kind() !== 's3' || photo.source_origin === 'external' || photo.source_origin === 'reference') {
+    return {};
+  }
+
+  try {
+    const sourceKey = resolvePhotoStorageKey(event, photo);
+    const isVideo = photo.media_type === 'video' || (photo.mime_type || '').startsWith('video/');
+    const primaryKey = isVideo
+      ? (photo.stream_path || sourceKey)
+      : (photo.preview_path || (originalNeedsPreview(photo) ? photo.thumbnail_path : sourceKey));
+    const previewKey = isVideo
+      ? (photo.stream_path || sourceKey)
+      : (photo.preview_path || photo.hero_path || primaryKey);
+    const keys = [...new Set([
+      primaryKey,
+      previewKey,
+      photo.thumbnail_path,
+      sourceKey,
+    ].filter(Boolean))];
+    const ttl = directUrlTtlSeconds();
+    const signedEntries = await Promise.all(keys.map(async key => [key, await storage.signedUrl(key, ttl)]));
+    const signed = new Map(signedEntries);
+
+    return {
+      direct_url: primaryKey ? signed.get(primaryKey) : null,
+      direct_thumbnail_url: photo.thumbnail_path ? signed.get(photo.thumbnail_path) : null,
+      direct_preview_url: previewKey ? signed.get(previewKey) : null,
+      direct_download_url: signed.get(sourceKey),
+      direct_mime_type: isVideo && photo.stream_path ? 'video/mp4' : (photo.mime_type || null),
+      direct_url_expires_in: ttl,
+    };
+  } catch (error) {
+    logger.warn('Could not create direct storage URLs', { photoId: photo.id, error: error.message });
+    return {};
+  }
 }
 const { setGalleryAuthCookies } = require('../utils/tokenUtils');
 // Read globals from app_settings (the real table) — settingsService.getSetting
@@ -856,6 +901,12 @@ router.get('/:slug/photos', verifyGalleryAccess, resolveGuest, async (req, res) 
     const useOriginalFilenames = await getUseOriginalFilenames();
     const globalHeroLogoVisible = await getAppSetting('branding_logo_display_hero', true);
     const globalLogoSize = await getAppSetting('branding_logo_size', 'medium');
+    const allowDirectStorageUrls =
+      process.env.TRAVELBLOGR_DIRECT_STORAGE_URLS !== 'false' &&
+      (req.viaTravelBlogr || req.viaShareLink);
+    if (allowDirectStorageUrls) {
+      res.set('Cache-Control', 'no-store');
+    }
 
     res.json({
       event: {
@@ -896,13 +947,17 @@ router.get('/:slug/photos', verifyGalleryAccess, resolveGuest, async (req, res) 
       hidden_until_reveal: hiddenForGuest,
       reveal_at: hiddenForGuest ? (req.event.reveal_at || null) : undefined,
       categories: categories,
-      photos: photos.map(photo => {
+      photos: await Promise.all(photos.map(async photo => {
         const useJwtUrl = (protectionSettings.protection_level === 'basic' || protectionSettings.protection_level === 'standard');
         // Add watermark version to URLs for cache busting when settings change
         const wmQuery = wmVersion ? `?${wmVersion}` : '';
         const photoUrl = useJwtUrl ?
           `/api/gallery/${req.params.slug}/photo/${photo.id}${wmQuery}` :
           `/api/secure-images/${req.params.slug}/secure/${photo.id}/{{token}}`;
+
+        const directStorageUrls = allowDirectStorageUrls
+          ? await buildDirectStorageUrls(req.event, photo)
+          : {};
 
         return {
           id: photo.id,
@@ -952,6 +1007,7 @@ router.get('/:slug/photos', verifyGalleryAccess, resolveGuest, async (req, res) 
           media_type: photo.media_type || null,
           mime_type: photo.mime_type || null,
           duration: photo.duration || null,
+          ...directStorageUrls,
           // Feedback data (hidden when show_feedback_to_guests is disabled)
           has_feedback: showFeedbackToGuests ? (commentMap[photo.id] > 0 || photo.average_rating > 0 || photo.like_count > 0) : false,
           average_rating: showFeedbackToGuests ? (photo.average_rating || 0) : 0,
@@ -965,7 +1021,7 @@ router.get('/:slug/photos', verifyGalleryAccess, resolveGuest, async (req, res) 
           // Visibility (only included for clients)
           ...(isClient ? { visibility: photo.visibility || 'visible' } : {})
         };
-      })
+      }))
     });
   } catch (error) {
     errorResponse(res, error, 500, 'Failed to fetch photos');
@@ -1511,10 +1567,13 @@ router.get('/:slug/photo/:photoId',
       let storageKey = null;   // Relative storage key (managed photos via storage abstraction)
       let stat;
       let fileSize;
+      const responseMimeType = isVideo && photo.stream_path ? 'video/mp4' : photo.mime_type;
 
       if (useStorageBackend) {
         try {
-          storageKey = resolvePhotoStorageKey(req.event, photo);
+          storageKey = isVideo && photo.stream_path
+            ? photo.stream_path
+            : resolvePhotoStorageKey(req.event, photo);
         } catch (resolveError) {
           logger.error('Failed to resolve photo storage key', {
             slug: req.params.slug,
@@ -1579,7 +1638,7 @@ router.get('/:slug/photo/:photoId',
             'Content-Range': `bytes ${start}-${end}/${fileSize}`,
             'Accept-Ranges': 'bytes',
             'Content-Length': chunksize,
-            'Content-Type': photo.mime_type || 'video/mp4',
+            'Content-Type': responseMimeType || 'video/mp4',
             'Cache-Control': 'private, max-age=1800',
             'X-Protection-Level': 'basic'
           });
@@ -1591,7 +1650,7 @@ router.get('/:slug/photo/:photoId',
         } else {
           res.writeHead(200, {
             'Content-Length': fileSize,
-            'Content-Type': photo.mime_type || 'video/mp4',
+            'Content-Type': responseMimeType || 'video/mp4',
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'private, max-age=1800',
             'X-Protection-Level': 'basic'

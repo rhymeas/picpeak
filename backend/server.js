@@ -161,7 +161,11 @@ const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
       process.env.FRONTEND_URL || 'http://localhost:3005',
-      process.env.ADMIN_URL || 'http://localhost:3005'
+      process.env.ADMIN_URL || 'http://localhost:3005',
+      ...(process.env.TRAVELBLOGR_ALLOWED_ORIGINS || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean)
     ];
 
     // In development, also allow localhost origins
@@ -396,6 +400,7 @@ async function initializeRateLimiters() {
   // Apply rate limiting
   app.use('/api/', generalRateLimiter);
   app.use('/api/auth', authRateLimiter);
+  app.use('/api/integrations/travelblogr', authRateLimiter);
   app.use('/api/gallery/:slug/verify', authRateLimiter);
   app.use('/api/admin/auth/login', authRateLimiter);
   app.use('/api/setup/admin', authRateLimiter);
@@ -695,6 +700,7 @@ app.get('/health', async (req, res) => {
 // Routes
 app.use('/api/setup', setupRoutes); // public first-run bootstrap (self-closes after setup)
 app.use('/api/auth', authRoutes);
+app.use('/api/integrations/travelblogr', require('./src/routes/travelblogrIntegration'));
 app.use('/api/admin/external-media', require('./src/routes/adminExternalMedia'));
 // Gallery routes - main routes first, then feedback routes
 app.use('/api/gallery', galleryRoutes);

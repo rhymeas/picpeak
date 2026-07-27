@@ -218,11 +218,22 @@ async function archiveEvent(event) {
       if (photo.preview_path) {
         await storage.delete(photo.preview_path).catch(() => {});
       }
+      if (photo.stream_path) {
+        await storage.delete(photo.stream_path).catch(() => {});
+      }
       // Best effort: remove watermarked variants too if a refactor added them.
       if (photo.watermark_path) {
         await storage.delete(photo.watermark_path).catch(() => {});
       }
     }
+
+    await db('photos').where('event_id', event.id).update({
+      thumbnail_path: null,
+      hero_path: null,
+      preview_path: null,
+      stream_path: null,
+      watermark_path: null,
+    });
 
     // Queue completion email — admin_email is nullable on events (migration 073);
     // skip queueing rather than violating email_queue.recipient_email NOT NULL.

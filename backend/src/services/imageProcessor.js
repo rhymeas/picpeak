@@ -10,6 +10,7 @@ const { getStorage } = require('./storage');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
+const IMMUTABLE_PRIVATE_CACHE = 'private, max-age=31536000, immutable';
 
 // Configure sharp for better memory management with large batches
 sharp.cache(false); // Disable cache to prevent memory buildup
@@ -23,11 +24,61 @@ const RAW_EXTENSIONS = new Set([
   'dng', 'cr2', 'cr3', 'nef', 'nrw', 'arw', 'sr2', 'srf',
   'raf', 'rw2', 'orf', 'pef', 'srw', 'raw', '3fr', 'dcr', 'kdc'
 ]);
+const HEIC_EXTENSIONS = new Set(['heic', 'heif']);
 
 function isRawFilename(name) {
   if (!name || typeof name !== 'string') return false;
   const ext = path.extname(name).toLowerCase().replace(/^\./, '');
   return RAW_EXTENSIONS.has(ext);
+}
+
+function isHeicFilename(name) {
+  if (!name || typeof name !== 'string') return false;
+  const ext = path.extname(name).toLowerCase().replace(/^\./, '');
+  return HEIC_EXTENSIONS.has(ext);
+}
+
+async function convertHeicToJpeg(heicPath, sourceName) {
+  const outDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'picpeak-heic-'));
+  const outputName = `${path.parse(sourceName || heicPath).name || crypto.randomBytes(4).toString('hex')}.jpg`;
+  const outPath = path.join(outDir, outputName);
+  let sharpError;
+
+  try {
+    try {
+      await sharp(heicPath)
+        .rotate()
+        .jpeg({ quality: 92, progressive: true, mozjpeg: true })
+        .toFile(outPath);
+    } catch (error) {
+      sharpError = error;
+      await fsp.rm(outPath, { force: true }).catch(() => {});
+      await execFileAsync('ffmpeg', [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-y',
+        '-i', heicPath,
+        '-frames:v', '1',
+        '-q:v', '2',
+        outPath,
+      ], { maxBuffer: 32 * 1024 * 1024 });
+    }
+
+    const metadata = await sharp(outPath).metadata();
+    if (!metadata.width || !metadata.height) {
+      throw new Error('Converted HEIC image has no usable dimensions');
+    }
+
+    return {
+      path: outPath,
+      outputBasename: outputName,
+      cleanup: () => fsp.rm(outDir, { recursive: true, force: true }).catch(() => {}),
+    };
+  } catch (error) {
+    await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    const sharpReason = sharpError ? `; sharp: ${sharpError.message}` : '';
+    throw new Error(`Could not convert HEIC image ${path.basename(sourceName || heicPath)}: ${error.message}${sharpReason}`);
+  }
 }
 
 /**
@@ -67,13 +118,15 @@ async function extractRawPreview(rawPath) {
 }
 
 /**
- * Give a Sharp-processable local image path for `localPath`. For ordinary
- * images it's a pass-through (no cost). For RAW/DNG (by `sourceName` extension)
- * it extracts the embedded JPEG preview and returns that, plus the basename to
- * use for generated outputs so thumbnails/previews stay named after the source
- * rather than the random temp file. Always call `cleanup()` when done.
+ * Give a Sharp-processable local image path for `localPath`. Ordinary images
+ * pass through. RAW/DNG uses an embedded JPEG; HEIC/HEIF is decoded to a
+ * metadata-free JPEG with Sharp and falls back to the system ffmpeg build.
+ * Always call `cleanup()` when done.
  */
 async function withProcessableImage(localPath, sourceName) {
+  if (isHeicFilename(sourceName)) {
+    return convertHeicToJpeg(localPath, sourceName);
+  }
   if (!isRawFilename(sourceName)) {
     return { path: localPath, outputBasename: undefined, cleanup: () => {} };
   }
@@ -254,7 +307,10 @@ async function generateThumbnail(imagePath, options = {}) {
       throw new Error('Generated thumbnail is empty');
     }
 
-    await storage.put(thumbnailRelKey, buffer, { contentType: contentTypeFor(settings.format) });
+    await storage.put(thumbnailRelKey, buffer, {
+      contentType: contentTypeFor(settings.format),
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
 
     return thumbnailRelKey;
   } catch (error) {
@@ -426,7 +482,10 @@ async function generateVideoPlaceholder(originalFilename, options = {}) {
       .jpeg({ quality: settings.quality || DEFAULT_THUMBNAIL_QUALITY })
       .toBuffer();
 
-    await storage.put(thumbnailRelKey, buffer, { contentType: 'image/jpeg' });
+    await storage.put(thumbnailRelKey, buffer, {
+      contentType: 'image/jpeg',
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
 
     return thumbnailRelKey;
   } catch (error) {
@@ -486,7 +545,10 @@ async function generateHeroImage(imagePath, options = {}) {
       throw new Error('Generated hero image is empty');
     }
 
-    await storage.put(heroRelKey, buffer, { contentType: 'image/jpeg' });
+    await storage.put(heroRelKey, buffer, {
+      contentType: 'image/jpeg',
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
 
     logger.info(`Generated hero image for ${filename} → ${heroRelKey}`);
     return heroRelKey;
@@ -623,7 +685,10 @@ async function generatePreviewImage(imagePath, options = {}) {
       throw new Error('Generated preview image is empty');
     }
 
-    await storage.put(previewRelKey, buffer, { contentType: 'image/jpeg' });
+    await storage.put(previewRelKey, buffer, {
+      contentType: 'image/jpeg',
+      cacheControl: IMMUTABLE_PRIVATE_CACHE,
+    });
 
     logger.info(`Generated preview image for ${filename} → ${previewRelKey}`);
     return previewRelKey;
@@ -750,7 +815,10 @@ module.exports = {
   extractCaptureDate,
   withLocalCopy,
   isRawFilename,
+  isHeicFilename,
   extractRawPreview,
+  convertHeicToJpeg,
   withProcessableImage,
   RAW_EXTENSIONS,
+  HEIC_EXTENSIONS,
 };
