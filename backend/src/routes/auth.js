@@ -19,7 +19,6 @@ const { timingSafeEqualStr } = require('../utils/timingSafe');
 const logger = require('../utils/logger');
 const { errorResponse } = require('../utils/routeHelpers');
 const {
-  setAdminAuthCookie,
   clearAdminAuthCookie,
   setGalleryAuthCookies,
   clearGalleryAuthCookies,
@@ -28,6 +27,7 @@ const {
   buildCookieOptionsWithExpiry,
   buildClearCookieOptions,
 } = require('../utils/tokenUtils');
+const { establishAdminSession } = require('../services/adminSessionService');
 const { getEventShareToken, resolveShareIdentifier } = require('../services/shareLinkService');
 const { getClientIp } = require('../utils/requestIp');
 const { sanitizePasswordInput } = require('../utils/passwordInput');
@@ -37,65 +37,6 @@ const {
   logPasswordValidationFailure
 } = require('../utils/passwordValidation');
 const router = express.Router();
-
-/**
- * Finish a successful admin login: reset the lockout counter, stamp
- * last_login, mint the 24h admin JWT, set the HttpOnly cookie, and return the
- * user payload. Shared by the direct (no-MFA) path and the MFA-verify path so
- * both produce an identical session. `lockoutKey` is the identifier the user
- * typed (username or email) so success/failure tracking stays in one bucket.
- */
-async function establishAdminSession(res, admin, ipAddress, userAgent, lockoutKey) {
-  await trackSuccessfulLogin(lockoutKey, ipAddress, userAgent);
-
-  // A normal login means the first-run wizard is over — the wizard never hits
-  // this route (setup sets its cookie directly). Close the system-event-type
-  // deletion window durably even when the wizard was abandoned mid-way (#800).
-  // Best-effort: a failure here must never block a login.
-  try {
-    const setupService = require('../services/setupService');
-    if (!(await setupService.isSetupWizardCompleted())) {
-      await setupService.markSetupWizardCompleted();
-    }
-  } catch (_) { /* best-effort */ }
-
-  await db('admin_users').where('id', admin.id).update({
-    last_login: new Date(),
-    last_login_ip: ipAddress
-  });
-
-  const token = jwt.sign({
-    id: admin.id,
-    username: admin.username,
-    type: 'admin',
-    role: admin.role_name,
-    ip: ipAddress,
-    loginTime: Date.now()
-  }, process.env.JWT_SECRET, {
-    expiresIn: '24h',
-    issuer: 'picpeak-auth'
-  });
-
-  setAdminAuthCookie(res, token);
-
-  // A fresh login supersedes any SSO marker a previous session left behind
-  // (#798 phase 3): sessions can die without /logout (deactivation, expiry,
-  // restore), and a stale marker would bounce a subsequent local-password
-  // session to the IdP on logout. The SSO callback re-sets the marker for
-  // its own session right after this returns.
-  res.clearCookie(OIDC_ID_TOKEN_COOKIE, oidcIdTokenClearOptions());
-
-  return {
-    id: admin.id,
-    username: admin.username,
-    email: admin.email,
-    mustChangePassword: admin.must_change_password || false,
-    role: admin.role_name ? {
-      name: admin.role_name,
-      displayName: admin.role_display_name
-    } : null
-  };
-}
 
 async function completeAdminLogin(req, res, admin, ipAddress, userAgent, lockoutKey) {
   const user = await establishAdminSession(res, admin, ipAddress, userAgent, lockoutKey);

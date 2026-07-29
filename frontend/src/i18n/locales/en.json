@@ -3693,6 +3693,15 @@
     },
     "ssoDivider": "or",
     "ssoSignIn": "Sign in with SSO",
+    "travelblogrSignIn": "Sign in with TravelBlogr",
+    "travelblogrErrors": {
+      "config": "TravelBlogr admin login is not configured.",
+      "forbidden": "This TravelBlogr account is not allowed to administer PicPeak.",
+      "inactive": "This PicPeak admin account is inactive.",
+      "replayed": "This login link was already used. Please start again.",
+      "invalid": "The TravelBlogr login handoff is invalid or expired.",
+      "failed": "TravelBlogr admin login failed. Please try again."
+    },
     "ssoOnlyHint": "Password login is disabled on this instance — sign in through your identity provider.",
     "ssoErrors": {
       "config": "SSO is misconfigured — check the SSO settings or sign in with email and password.",

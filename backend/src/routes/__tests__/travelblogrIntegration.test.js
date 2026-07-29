@@ -81,6 +81,28 @@ describe('TravelBlogr integration session', () => {
     expect(response.headers['cache-control']).toBe('no-store');
   });
 
+  it('gives an anonymous TravelBlogr visitor the same gallery-only scope', async () => {
+    const response = await request(app)
+      .post('/api/integrations/travelblogr/session')
+      .send({ assertion: assertion({
+        type: 'travelblogr_guest_session',
+        sub: 'guest_123',
+      }) })
+      .expect(200);
+
+    const galleryClaims = jwt.verify(response.body.token, jwtSecret, {
+      algorithms: ['HS256'],
+      issuer: 'picpeak-auth',
+    });
+
+    expect(galleryClaims).toMatchObject({
+      type: 'gallery',
+      accessLevel: 'guest',
+      travelblogrSessionType: 'travelblogr_guest_session',
+    });
+    expect(galleryClaims.type).not.toBe('admin');
+  });
+
   it('rejects a gallery slug outside the allow-list', async () => {
     await request(app)
       .post('/api/integrations/travelblogr/session')

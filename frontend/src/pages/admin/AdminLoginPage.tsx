@@ -62,6 +62,14 @@ export const AdminLoginPage: React.FC = () => {
     }
   }, [searchParams, t]);
 
+  useEffect(() => {
+    const travelBlogrError = searchParams.get('travelblogr_error');
+    if (!travelBlogrError) return;
+    const known = ['config', 'forbidden', 'inactive', 'replayed', 'invalid', 'failed'];
+    const key = known.includes(travelBlogrError) ? travelBlogrError : 'failed';
+    toast.error(t(`adminLogin.travelblogrErrors.${key}`));
+  }, [searchParams, t]);
+
   // SSO callback failures land here as ?sso_error=<key> (#798) — surface a
   // translated message instead of a silent bounce back to the form.
   useEffect(() => {
@@ -262,6 +270,27 @@ export const AdminLoginPage: React.FC = () => {
 
         {/* Login Form */}
         <Card padding="lg">
+          {step === 'credentials' && settingsData?.travelblogr_admin_login_url && (
+            <div className="mb-6 space-y-5">
+              <Button
+                type="button"
+                variant="primary"
+                size="lg"
+                className="w-full"
+                leftIcon={<ShieldCheck className="w-4 h-4" />}
+                onClick={() => { window.location.href = settingsData.travelblogr_admin_login_url!; }}
+              >
+                {t('adminLogin.travelblogrSignIn')}
+              </Button>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 border-t border-neutral-200" />
+                <span className="text-xs uppercase tracking-wide text-neutral-400">
+                  {t('adminLogin.ssoDivider', 'or')}
+                </span>
+                <div className="flex-1 border-t border-neutral-200" />
+              </div>
+            </div>
+          )}
           {step === 'credentials' && settingsData?.oidc_enabled === true && settingsData?.oidc_local_login_disabled === true ? (
           // SSO-only mode (#798 phase 2): the backend refuses password logins
           // while oidc_disable_local_login is effective, so the form would

@@ -417,8 +417,14 @@ app.use('/api', (req, res, next) => {
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
     const contentType = req.headers['content-type'] || '';
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
+    const isSignedTravelBlogrAdminHandoff = req.method === 'POST'
+      && req.originalUrl.split('?')[0] === '/api/integrations/travelblogr/admin-session'
+      && contentType.includes('application/x-www-form-urlencoded');
     // Allow empty-body requests (e.g. logout), multipart for uploads, and JSON for API calls
-    if (contentLength > 0 && !contentType.includes('application/json') && !contentType.includes('multipart/form-data')) {
+    if (contentLength > 0
+      && !contentType.includes('application/json')
+      && !contentType.includes('multipart/form-data')
+      && !isSignedTravelBlogrAdminHandoff) {
       return res.status(415).json({ error: 'Unsupported Content-Type. Use application/json or multipart/form-data.' });
     }
   }

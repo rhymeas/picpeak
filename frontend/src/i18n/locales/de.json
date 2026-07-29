@@ -3807,6 +3807,15 @@
     },
     "ssoDivider": "oder",
     "ssoSignIn": "Mit SSO anmelden",
+    "travelblogrSignIn": "Mit TravelBlogr anmelden",
+    "travelblogrErrors": {
+      "config": "Die TravelBlogr-Admin-Anmeldung ist nicht konfiguriert.",
+      "forbidden": "Dieser TravelBlogr-Account darf PicPeak nicht verwalten.",
+      "inactive": "Dieses PicPeak-Admin-Konto ist deaktiviert.",
+      "replayed": "Dieser Anmelde-Link wurde bereits verwendet. Bitte starte erneut.",
+      "invalid": "Die TravelBlogr-Anmeldung ist ungültig oder abgelaufen.",
+      "failed": "Die TravelBlogr-Admin-Anmeldung ist fehlgeschlagen. Bitte versuche es erneut."
+    },
     "ssoOnlyHint": "Die Passwort-Anmeldung ist auf dieser Instanz deaktiviert — melden Sie sich über Ihren Identity Provider an.",
     "ssoErrors": {
       "config": "SSO ist falsch konfiguriert — prüfen Sie die SSO-Einstellungen oder melden Sie sich mit E-Mail und Passwort an.",
