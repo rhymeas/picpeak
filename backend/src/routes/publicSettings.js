@@ -142,6 +142,7 @@ router.get('/', async (req, res) => {
       // SSO" button from these. Issuer/client/secret are never public.
       oidc_enabled: settingsObject.oidc_enabled === true,
       oidc_button_label: settingsObject.oidc_button_label || '',
+      travelblogr_admin_login_url: (process.env.TRAVELBLOGR_ADMIN_LOGIN_URL || '').trim(),
       // EFFECTIVE flag (phase 2): true only while the backend would actually
       // refuse a password login (SSO enabled + configured + policy on, no
       // break-glass env) — the login page hides the password form from this,
